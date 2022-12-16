@@ -1,0 +1,71 @@
+---
+title: "2_PCA"
+author: "massaine"
+date: "2022-12-15"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+### load BLUPs
+```{r}
+load(file=here::here("output","phenotypes_BLUPs_lme4.RData"))
+library(ggplot2)
+library(tidyverse)
+```
+
+### PLOTs (por trial type)
+```{r}
+library(dplyr)
+str(BLUP1T)
+
+BLUP1T$trait <- as.factor(BLUP1T$trait)
+BLUP1T$value <- as.numeric(BLUP1T$value)
+BLUP1T$Trial <- as.factor(BLUP1T$Trial)
+BLUP1T <- BLUP1T %>% filter(entryType!="test") 
+
+p1<-ggplot(BLUP1T, aes(x=entryType, y=value,fill=trait)) + 
+  geom_boxplot(outlier.shape = NA) + theme_bw() +# ylim(0.7, 1) + 
+  ggtitle("PYT") + facet_wrap(~ trait, scales = "free_y")+
+  theme(legend.position = "none", legend.title =element_blank())+
+  stat_summary(fun="mean",color="red")
+
+BLUP2T$trait <- as.factor(BLUP2T$trait)
+BLUP2T$value <- as.numeric(BLUP2T$value)
+BLUP2T$Trial <- as.factor(BLUP2T$Trial)
+BLUP2T <- BLUP2T %>% filter(entryType!="test") 
+
+p2<-ggplot(BLUP2T, aes(x=entryType, y=value,fill=trait)) + 
+  geom_boxplot(outlier.shape = NA) + theme_bw() +# ylim(0.2, 1) + 
+  ggtitle("AYT") + facet_wrap(~ trait, scales = "free_y")+
+  theme(legend.position = "none", legend.title =element_blank())+
+  stat_summary(fun="mean",color="red")
+
+
+
+BLUP3T$trait <- as.factor(BLUP3T$trait)
+BLUP3T$value <- as.numeric(BLUP3T$value)
+BLUP3T$Trial <- as.factor(BLUP3T$Trial)
+BLUP3T <- BLUP3T %>% filter(entryType!="test") 
+
+p3<-ggplot(BLUP3T, aes(x=entryType, y=value,fill=trait)) + 
+  geom_boxplot(outlier.shape = NA) + theme_bw() +# ylim(0.7, 1) + 
+  ggtitle("UYT") + facet_wrap(~ trait, scales = "free_y")+
+  theme(legend.position = "none", legend.title =element_blank())+
+ stat_summary(fun="mean",color="red")
+ 
+ 
+BLUP4T$trait <- as.factor(BLUP4T$trait)
+BLUP4T$value <- as.numeric(BLUP4T$value)
+BLUP4T$Trial <- as.factor(BLUP4T$Trial)
+BLUP4T <- BLUP4T %>% filter(entryType!="test") 
+
+p4<-ggplot(BLUP4T, aes(x=entryType, y=value,fill=trait)) + 
+  geom_boxplot(outlier.shape = NA) + theme_bw() +# ylim(0.7, 1) + 
+  ggtitle("PYT+AYT+UYT") + facet_wrap(~ trait, scales = "free_y")+
+  theme(legend.position = "none", legend.title =element_blank())+
+stat_summary(fun="mean",color="red")
+
+
+```
+

@@ -1,0 +1,623 @@
+---
+title: "2_PCA"
+author: "massaine"
+date: "2022-12-15"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Introduction
+
+```{r  message=FALSE}
+library(gt)
+library(plyr)
+library(ggplot2)
+library(lme4)
+library(kableExtra)
+library(tidyverse)
+require(ComplexHeatmap)
+library(data.table)
+library(readxl)
+library(metan)
+library(knitr)
+library(DataExplorer)
+library(doParallel)
+library(genomicMateSelectR)
+
+#phenos<-readRDS(here::here("output","phenotypes_cleaned.rds"))
+#phenos1 <- as.data.frame(phenos)
+#write.table(phenos1,here::here("data",file="Fenotipo1.txt"),sep = " ")
+phenos2 <- read.table(here::here("data",file="Fenotipo1.txt"),h=T,sep = "\t")
+```
+
+
+
+## Data import and manipulation
+
+#Agora, vamos importar o conjunto de dados fenotípicos, excluindo as variaveis sem informações e as variaveis Local (redundante com Ano) e Tratamento (só uma observação).
+
+#Vamos realizar alguma manipulações para ajustar nosso banco de dados e para facilitar a visualização da análise exploratória.
+
+#Primeiro, vamos converter as variaveis que são caracter em fatores. Depois vamos converter as variaveis que são referentes as notas para inteiro e logo em seguida em fatores. Após isso, vamos criar a variável ANo.Bloco para o aninhamento no modelo para obtenção dos BLUPs.
+
+```{r}
+pheno <- phenos2
+colnames(pheno)
+
+pheno$studyYear <- as.factor(pheno$studyYear)
+pheno$blockNumber <- as.factor(pheno$blockNumber)
+pheno$germplasmName <- as.factor(pheno$germplasmName)
+pheno$studyName <- as.factor(pheno$studyName)
+pheno$entryType <- as.factor(pheno$entryType)
+pheno$trialType <- as.factor(pheno$trialType)
+
+pheno  %<>%  select(-c(plotArea,IncompleteBlocks,CompleteBlocks,plantsPerPlot, numberReps, NHOAV))
+pheno  %<>%  select(-NOHAV)
+
+```
+
+## Data summary 
+
+Análise introdutória de todo conjunto de dados
+
+```{r,eval=FALSE}
+introduce(pheno) %>% kbl(escape = F, align = 'c') %>%
+  kable_classic(
+    "hover",
+    full_width = F,
+    position = "center",
+    fixed_thead = T
+  )
+```
+
+#Vamos produizr um headmap para verificar a quantidade de genótipos em cada ano.
+
+```{r,eval=FALSE}
+pheno2<- pheno %>% dplyr::count(studyName, germplasmName)
+  
+genmat = model.matrix( ~ -1 + germplasmName, data = pheno2)
+trialmat = model.matrix( ~ -1 + studyName, data = pheno2)
+genenvmat = t(trialmat) %*% genmat
+genenvmat_ch = ifelse(genenvmat == 1, "Present", "Abscent")
+Heatmap(
+  genenvmat_ch,
+  col = c("white", "tomato"),
+  show_column_names = F,
+  heatmap_legend_param = list(title = ""),
+  column_title = "Genotypes",
+  row_title = "Trials"
+)
+```
+
+##O BAG foi eliminado
+
+```{r}
+pheno <- pheno %>% 
+  filter(trialType != "BAG") %>% 
+  droplevels()
+```
+
+#Agora vamos visualizar novamente o headmap
+
+```{r}
+pheno2<- pheno %>% dplyr::count(studyName, germplasmName)
+  
+genmat = model.matrix( ~ -1 + germplasmName, data = pheno2)
+trialmat = model.matrix( ~ -1 + studyName, data = pheno2)
+genenvmat = t(trialmat) %*% genmat
+genenvmat_ch = ifelse(genenvmat == 1, "Present", "Abscent")
+Heatmap(
+  genenvmat_ch,
+  col = c("white", "tomato"),
+  show_column_names = F,
+  heatmap_legend_param = list(title = ""),
+  column_title = "Genotypes",
+  row_title = "Trials"
+)
+```
+
+#Pela headmap é possível obervar que nosso conjunto de dados possui genótipos que foram avaliados em apenas um Ano, isso pode ocasionar problemas de computação futuramente. Vamos visualizar isso, para verificarmos quais e quantos genótipos foram avaliados apenas em um Ano.
+
+```{r}
+pheno2 %>% 
+  count(germplasmName) %>%   
+  ggplot(aes(n,reorder(germplasmName, n)))+
+  geom_col()+
+  labs(y= "Genotype") +
+  theme_minimal()
+```
+
+
+```{r,eval=FALSE}
+pheno2 %>% 
+  count(Clone) %>% 
+  count(n) %>% 
+  kbl(
+  escape = F,
+  align = 'c',
+  col.names = c("N of Environments", "Number of genotypes")
+) %>%
+  kable_classic(
+    "hover",
+    full_width = F,
+    position = "center",
+    fixed_thead = T
+  )
+```
+
+#Apenas 5 genótipos foram avaliados em todos os Anos, isso possivelmente trará problemas nas análises.
+
+#Além disso, observe que os ambientes diferem quanto ao número de genótipos avaliados:
+
+```{r,eval=FALSE}
+pheno2 %>% group_by(studyName) %>% summarise(length(germplasmName)) %>% kbl(
+  escape = F,
+  align = 'c',
+  col.names = c("Environments", "Number of genotypes")
+) %>%
+  kable_classic(
+    "hover",
+    full_width = F,
+    position = "center",
+    fixed_thead = T
+  )
+```
+
+#Podemos ver quantos genótipos temos em comum entre os ambientes
+
+```{r,eval=FALSE}
+genenvmat %*% t(genenvmat) %>% kbl(escape = F, align = 'c') %>%
+  kable_classic(
+    "hover",
+    full_width = F,
+    position = "center",
+    fixed_thead = T
+  )
+```
+
+#O ano 2020 apresenta menor número de genótipos em comum, no entanto, vamos mantê-lo para realizar as análises.
+
+
+#Agora, iremos analisas a frequência para cada característica discreta.
+
+```{r}
+str(pheno)
+plot_bar(as.factor(pheno$PA))
+```
+
+#Além disso, a Incidencia e Florescimento possui poucas informações para alguns níveis e muitos NA's, também vamos excluir essas variáveis. 
+
+```{r,eval=FALSE}
+pheno <- pheno  %>% 
+  select(-c(CWLSD, CBroLS,CBliLS))
+plot_bar(pheno)
+```
+
+Vamos observar apenas os valores ausentes agora, para verificar as proporções
+
+```{r}
+plot_missing(pheno[,17:ncol(pheno)])
+```
+
+#Temos uma proporção alta de NA's para Vigor, Leaf_Lenght, Canopy_Width e Canopy_Lenght, também vou excluir-lás.
+
+```{r,eval=FALSE}
+pheno <- pheno %>% 
+  select(-c(vigor, SRootDiam))
+```
+
+#Vamos verificar a distribuição dessas características por ano agora.
+
+```{r}
+str(pheno)
+traits <- colnames(pheno)[17:30]
+pheno<- pheno %>% 
+  mutate_at(traits, as.numeric)
+plot_histogram(pheno[,(17:30)])
+
+#plot_bar(pheno[,c(2,17:34)], by = "studyName")
+```
+
+#Para Porte, Branching_Level e Staygreen temos muitos NA's para o ano de 2017, possivelmente não houve avaliação nesse ano para essas características. Para obter os BLUPs, teremos que remover esse Ano do banco de dados.
+
+Agora vamos observar os histogramas das varaiveis quantitativas
+
+```{r}
+str(pheno)
+
+pheno<- pheno %>% 
+  mutate_at(traits, as.numeric)
+plot_histogram(pheno[,(17:30)])
+```
+
+#Vimos aqui que as variáveis quantitativas apresentam correlações entre si, principalmente entre PROD.AMD com PTR e AMD com MS
+
+### Descritive statistic of traits
+
+#Vamos avaliar as estatisticas descritivas da combinação entre clone e ano para as variaveis
+
+```{r}
+ge_details(pheno, studyYear, germplasmName, resp = everything()) %>% kbl(escape = F, align = 'c') %>%
+  kable_classic(
+    "hover",
+    full_width = F,
+    position = "center",
+    fixed_thead = T
+  )
+```
+
+#O genótipo BGM-0044 apresentou valores nulos para a maioria das características, como foi avaliado apenas no ano de 2018, é melhor excluí-lo.
+
+```{r,eval=FALSE}
+pheno<- pheno %>% 
+  filter(Clone != "BGM-0044")%>% 
+  droplevels()
+```
+
+#Aparentemente não temos um genótipo que possa prejudicar nossa análise, mas no entanto agora vamos avaliar as estatisticas descritivas apenas de clone para as variaveis
+
+```{r,eval=FALSE}
+str(pheno)
+  desc_stat(pheno, by=studyName) %>% 
+  kbl(escape = F, align = 'c') %>%
+  kable_classic(
+    "hover",
+    full_width = F,
+    position = "center",
+    fixed_thead = T
+  )
+```
+
+#Algumas variáveis não foram computadas para o ano de 2017 então temos que eliminar esse ano na hora de realizar a análise para essas variaveis
+
+```{r,eval=FALSE}
+inspect(pheno %>%
+          select(-c(germplasmName))) %>% kbl(escape = F, align = 'c') %>%
+  kable_classic(
+    "hover",
+    full_width = F,
+    position = "center",
+    fixed_thead = T
+  )
+```
+
+Algumas das variaveis possuem outliers que também devemos remover da análise futuramente.
+
+### Correlation
+
+Apenas para o nosso conhecimento, vamos avaliar a correlação para podermos discutir futuramente.
+
+```{r,eval=FALSE}
+plot(corr_coef(pheno[,17:30]))
+```
+
+#Amido com MS e PROD.AMD com PTR apresentam alta correlação. Agora vamos realizar apenas uma inspeção geral dos dados para finalizar as manipulações.
+
+```{r,eval=FALSE}
+corr_plot(pheno[,c(2,17:30)], col.by = studyName)
+```
+
+# Genotype-environment analysis by mixed-effect models
+
+Função para obter os blups e alguns parâmetros.
+
+```{r}
+deregress<-function(model, trait){
+  BLUP <- ranef(model, condVar=TRUE)$Clone
+  PEV <- c(attr(BLUP, "postVar")) # PEV is a vector of error variances associated with each individual BLUP... # it tells you about how confident you should be in the estimate of an individual CLONE's BLUP value.
+  Clone.var <- c(VarCorr(model)$Clone) # Extract the variance component for CLONE
+  ResidVar <- (attr(VarCorr(model),"sc"))^2 # Extract the residual variance component
+  Ano.Bloco <- c(VarCorr(model)$Ano.Bloco) # Extract the variance component for Ano.Bloco
+  # You will need a line like the one above for every random effect (not for fixed effects)
+  out <- BLUP/(1-(PEV/Clone.var)) # This is the actual de-regress part (the BLUP for CLONE is divided by (1 - PEV/CLONE.var))
+  r2 <- 1-(PEV/Clone.var) # Reliability: a confidence value for a BLUP (0 to 1 scale)
+  H2 = Clone.var/(Clone.var + Ano.Bloco + ResidVar) # An estimate of the broad-sense heritability, must change this formula when you change the model analysis
+  wt = (1-H2)/((0.1 + (1-r2)/r2)*H2) # Weights for each de-regressed BLUP
+  # There is a paper the determined this crazy formula, Garrick et al. 2009. I wouldn't pay much attn. to it.
+  # These weights will be used in the second-step (e.g. cross-validation) to account for what we've done in this step
+  # The weights will be fit as error variances associated with each residual value
+  VarComps<-as.data.frame(VarCorr(model))
+  return(list(Trait=trait, drgBLUP=out, BLUP=BLUP, weights=wt, varcomps=VarComps,H2=H2,Reliability=r2,model=model))
+}
+
+save(deregress, file = "output/deregress.Rdata")
+```
+
+
+## The BLUP model
+
+```{r,eval=FALSE}
+excluir_2017 <- c("Porte", "Branching_Level", "Staygreen", "AMD", "MS", "Nº Hastes" , "PROD.AMD")
+```
+
+Vamos converter todas as variáveis que estão como fatores para numéricas agora.
+
+```{r}
+traits <- colnames(pheno)[17:30]
+pheno<- pheno %>% 
+  mutate_at(traits, as.numeric)
+
+#pheno$replicate <- paste(pheno$studyName,pheno$blockNumber,sep = ".")
+```
+
+Agora vamos realizar a análise de modelos mistos para obter os blups
+
+### PYT
+```{r}
+PYTBlup <- pheno %>% filter(trialType == "PYT") 
+AYTBlup <- pheno %>% filter(trialType == "AYT") 
+UYTBlup <- pheno %>% filter(trialType == "UYT") 
+CETBlup <- pheno %>% filter(trialType == "CET") 
+
+pheno3 <-  pheno %>% filter(trialType != "CET") 
+
+```
+
+```{r}
+BLUP1 <- list()
+data <- PYTBlup
+data <- droplevels(data)
+
+for (i in 1:length(traits)) {
+
+model <- lmer(get(traits[i]) ~ (1|germplasmName) + (blockNumber|studyName) + (1|studyName:germplasmName), data=data)
+
+blup <- matrix(NA,length(rownames(ranef(model)$germplasmName)),3)
+blup[,3] <- as.matrix(ranef(model)$germplasmName[,1]+fixef(model))
+blup[,2] <- as.matrix(rownames(ranef(model)$germplasmName))
+blup[,1] <- traits[i]
+blup <- as.data.frame(blup)
+colnames(blup) <- c("trait","germplasmName","value")
+xx <- unique(data[,c("germplasmName","entryType")])
+xx1 <- merge(xx,blup,by="germplasmName")
+BLUP1[[i]] <- xx1
+}
+BLUP1T <- do.call(rbind,BLUP1)
+BLUP1T$Trial <- "PYT"
+
+
+BLUP2 <- list()
+data <- AYTBlup
+data <- droplevels(data)
+for (i in 1:length(traits)) {
+model <- lmer(get(traits[i]) ~ (1|germplasmName) + (blockNumber|studyName) + (1|studyName:germplasmName), data=data)
+
+blup <- matrix(NA,length(rownames(ranef(model)$germplasmName)),3)
+blup[,3] <- as.matrix(ranef(model)$germplasmName[,1]+fixef(model))
+blup[,2] <- as.matrix(rownames(ranef(model)$germplasmName))
+blup[,1] <- traits[i]
+blup <- as.data.frame(blup)
+colnames(blup) <- c("trait","germplasmName","value")
+xx <- unique(data[,c("germplasmName","entryType")])
+xx1 <- merge(xx,blup,by="germplasmName")
+BLUP2[[i]] <- xx1
+}
+
+BLUP2T <- do.call(rbind,BLUP2)
+BLUP2T$Trial <- "AYT"
+
+
+
+BLUP3 <- list()
+data <- UYTBlup
+data <- droplevels(data)
+traits1 <- traits[-c(8:9)]
+
+for (i in 1:length(traits1)) {
+
+model <- lmer(get(traits1[i]) ~ (1|germplasmName) + (blockNumber|studyName) + (1|studyName:germplasmName), data=data)
+
+blup <- matrix(NA,length(rownames(ranef(model)$germplasmName)),3)
+blup[,3] <- as.matrix(ranef(model)$germplasmName[,1]+fixef(model))
+blup[,2] <- as.matrix(rownames(ranef(model)$germplasmName))
+blup[,1] <- traits1[i]
+blup <- as.data.frame(blup)
+colnames(blup) <- c("trait","germplasmName","value")
+xx <- unique(data[,c("germplasmName","entryType")])
+xx1 <- merge(xx,blup,by="germplasmName")
+BLUP3[[i]] <- xx1
+}
+
+BLUP3T <- do.call(rbind,BLUP3)
+BLUP3T$Trial <- "UYT"
+
+
+
+
+
+### AYT + UYT
+BLUP4 <- list()
+data <- pheno3
+data<- droplevels(data)
+
+for (i in 1:length(traits)) {
+model <- lmer(get(traits[i]) ~ (1|germplasmName) + (blockNumber|studyName) + (1|studyName:germplasmName), data=data)
+blup <- matrix(NA,length(rownames(ranef(model)$germplasmName)),3)
+blup[,3] <- as.matrix(ranef(model)$germplasmName[,1]+fixef(model))
+blup[,2] <- as.matrix(rownames(ranef(model)$germplasmName))
+blup[,1] <- traits[i]
+blup <- as.data.frame(blup)
+colnames(blup) <- c("trait","germplasmName","value")
+xx <- unique(data[,c("germplasmName","entryType")])
+xx1 <- merge(xx,blup,by="germplasmName")
+BLUP4[[i]] <- xx1
+}
+BLUP4T <- do.call(rbind,BLUP4)
+BLUP4T$Trial <- "PYT_AYT_UYT"
+
+
+BLUP5 <- list()
+data <- CETBlup
+data<- droplevels(data)
+data$germplasmName
+levels(data$entryType) <- c("check","test", "test","test")
+
+for (i in 1:length(traits)) {
+model <- lmer(get(traits[i]) ~ (1|germplasmName)+entryType +
+                (blockNumber|studyName) + 
+                (1|studyName:germplasmName), data=data)
+
+blup <- matrix(NA,length(rownames(ranef(model)$germplasmName)),3)
+blup[,3] <- as.matrix(ranef(model)$germplasmName[,1]+fixef(model))
+blup[,2] <- as.matrix(rownames(ranef(model)$germplasmName))
+blup[,1] <- traits[i]
+blup <- as.data.frame(blup)
+colnames(blup) <- c("trait","germplasmName","value")
+xx <- unique(data[,c("germplasmName","entryType")])
+xx1 <- merge(xx,blup,by="germplasmName")
+BLUP5[[i]] <- xx1
+}
+BLUP5T <- do.call(rbind,BLUP5)
+BLUP5T$Trial <- "CET"
+
+```
+
+
+### SAVE BLUPs
+```{r}
+save(BLUP1T,BLUP2T,BLUP3T,BLUP4T,
+     file=here::here("output","phenotypes_BLUPs_lme4.RData"))
+```
+
+### cet
+```{r}
+
+BLUP5 <- list()
+data <- subset(CETBlup,CETBlup$studyName=="BR.CET.18.CNPMF")
+data<- droplevels(data)
+
+for (i in 1:length(traits)) {
+model <- lmer(get(traits[i]) ~ (1|germplasmName)+
+                (blockNumber), data=data)
+
+blup <- matrix(NA,length(rownames(ranef(model)$germplasmName)),3)
+blup[,3] <- as.matrix(ranef(model)$germplasmName[,1]+fixef(model))
+blup[,2] <- as.matrix(rownames(ranef(model)$germplasmName))
+blup[,1] <- traits[i]
+blup <- as.data.frame(blup)
+colnames(blup) <- c("trait","germplasmName","value")
+xx <- unique(data[,c("germplasmName","entryType")])
+xx1 <- merge(xx,blup,by="germplasmName")
+BLUP5[[i]] <- xx1
+}
+BLUP5T <- do.call(rbind,BLUP5)
+BLUP5T$Trial <- "CET_C1"
+
+
+BLUP6 <- list()
+data <- subset(CETBlup,CETBlup$studyName=="BR.CET.20.CNPMF")
+data<- droplevels(data)
+
+for (i in 1:length(traits)) {
+model <- lmer(get(traits[i]) ~ (1|germplasmName)+
+                (blockNumber), data=data)
+
+blup <- matrix(NA,length(rownames(ranef(model)$germplasmName)),3)
+blup[,3] <- as.matrix(ranef(model)$germplasmName[,1]+fixef(model))
+blup[,2] <- as.matrix(rownames(ranef(model)$germplasmName))
+blup[,1] <- traits[i]
+blup <- as.data.frame(blup)
+colnames(blup) <- c("trait","germplasmName","value")
+xx <- unique(data[,c("germplasmName","entryType")])
+xx1 <- merge(xx,blup,by="germplasmName")
+BLUP6[[i]] <- xx1
+}
+BLUP6T <- do.call(rbind,BLUP6)
+BLUP6T$Trial <- "CET_C2"
+```
+
+
+
+
+
+
+
+
+```{r}
+load("output/deregress.Rdata")
+
+registerDoParallel(cores = 4) # Specify the number of cores (my lab computer has 8; I will use 6 of them)
+
+DRG <- foreach(a = traits, i = icount(), .inorder = TRUE) %dopar% {
+  require(lme4)
+  require(dplyr)
+  library(purrr)
+  
+  data <- PYTC1Blup
+  data <- droplevels(data)
+  outliers <- boxplot(data[i+15], plot = FALSE)$out
+  
+  if(!is_empty(outliers)){
+  data <- filter(data,data[i+15] != outliers)
+  }
+  
+  model <- lmer(data = data,
+                formula = get(traits[i]) ~ (1 |germplasmName) + studyName + (1|blockNumber)) # CLONE and REP are random LOC.YEAR is fixed
+  drg <- deregress(model, traits[i])
+}
+
+save(DRG, file = "output/BLUPs_PYTC1.Rdata")
+```
+
+### BLUPS for `Clone`
+
+```{r}
+load("output/BLUPs_PYTC1.Rdata")
+# since I used "foreach" to run each stage 1 analysis in parallel, each trait is in a separate element of a list
+# We need to process the object DRG into a data.frame or matrix for further analysis
+
+phen <- data.frame(germplasmName = unique(PYTC1Blup$germplasmName), stringsAsFactors = F)
+H2<- data.frame(H2 = "H2", stringsAsFactors = F)
+# Aqui vamos obter os BLUPS para cada clone
+
+for (i in 1:length(DRG)) {
+  data <- data.frame(germplasmName = rownames(DRG[[i]]$BLUP),
+               stringsAsFactors = F)
+  data[, DRG[[i]]$Trait] <- DRG[[i]]$BLUP
+  phen <- merge(phen, data, by = "germplasmName", all.x = T)
+  H2[, DRG[[i]]$Trait] <- DRG[[i]]$H2
+}
+DRG[[i]]$BLUP
+rownames(phen) <- phen$Clone
+
+saveRDS(phen, file = "BLUPS.RDS")
+
+write.csv(
+  phen,
+  "output/BLUPS.csv",
+  row.names = F,
+  quote = F
+)
+
+write.csv(
+  H2,
+  "output/herdabilidade.csv",
+  row.names = F,
+  quote = F
+)
+```
+
+## Ploting BLUPS for all traits
+
+```{r}
+
+media_pheno <- as.data.frame(pheno %>%
+  summarise_if(is.numeric, mean, na.rm = TRUE))
+
+write.table(media_pheno, "output/media_pheno.csv")
+
+for(i in traits){
+  phen[i] <- phen[i] + media_pheno[,i]
+}
+
+phen %>% 
+pivot_longer(2:19, names_to = "Variable", values_to = "Values") %>%
+  ggplot() +
+  geom_boxplot(aes(y=Values, fill = Variable)) +
+  facet_wrap(.~Variable, ncol =6, scales = "free")+
+  theme_bw()
+```
+
+
+
